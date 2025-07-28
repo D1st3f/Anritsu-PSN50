@@ -6,6 +6,7 @@
 #include <QtSerialPort/QSerialPortInfo>
 #include <QTimer>
 #include <QByteArray>
+#include <QLabel>
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
@@ -27,21 +28,31 @@ private slots:
     void on_buttonStartStop_clicked();
     void on_zeroButton_clicked();
     void performMeasurement();
-    void performZeroCommand(); // Новий слот для виконання команди ZERO після затримки
+    void performZeroCommand();
+    void requestTemperature();
 
 private:
     void updatePowerDisplay();
     void setInterfaceEnabled(bool enabled);
+    void resetStatusLabels();
 
     Ui::MainWindow *ui;
     QSerialPort *serial;
     QTimer *measurementTimer;
-    QTimer *zeroDelayTimer; // Новий таймер для затримки перед ZERO
+    QTimer *zeroDelayTimer;
+    QTimer *tempUpdateTimer;
     QByteArray serialBuffer;
+
+    QLabel *statusIdLabel;
+    QLabel *statusTempLabel;
 
     bool isMeasuring = false;
     bool isZeroing = false;
-    bool wasMeasuring = false; // Для запам'ятовування стану вимірювання під час обнулення
+    bool wasMeasuring = false;
+
+    bool awaitingIdnResponse = false;
+    bool awaitingTempResponse = false;
+
     double attenuationDb = 0.0;
     double lastMeasuredPower = 0.0;
 };
