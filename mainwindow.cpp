@@ -3,6 +3,11 @@
 #include <QMessageBox>
 #include <QLocale>
 #include <QDebug>
+#include <QFileDialog>
+#include <QTextStream>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
 #include <cmath>
 
 MainWindow::MainWindow(QWidget *parent)
@@ -30,6 +35,10 @@ MainWindow::MainWindow(QWidget *parent)
     ui->statusbar->addPermanentWidget(statusIdLabel);
     ui->statusbar->addPermanentWidget(statusTempLabel, 1);
     resetStatusLabels();
+
+    // Initialize presets combo box
+    ui->comboPresets->addItem("Select preset or enter manually");
+    ui->comboPresets->setCurrentIndex(0);
 }
 
 MainWindow::~MainWindow() {
@@ -308,4 +317,256 @@ void MainWindow::updatePowerDisplay() {
         displayTextWatts = QString::number(powerWatts, 'e', 3) + " W";
     }
     ui->labelWattValue->setText(displayTextWatts);
+}
+
+void MainWindow::on_buttonLoadCsv_clicked() {
+    QString fileName = QFileDialog::getOpenFileName(this,
+                                                    tr("Open Attenuation CSV File"), "", tr("CSV Files (*.csv)"));
+
+    if (!fileName.isEmpty()) {
+        loadAttenuationTable(fileName);
+    }
+}
+
+void MainWindow::loadAttenuationTable(const QString &filePath) {
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, "Error", "Cannot open file: " + file.errorString());
+        return;
+    }
+
+    attenuationTable.clear();
+    QTextStream in(&file);
+    QString line;
+    int lineNumber = 0;
+    int validEntries = 0;
+
+    // Skip header if exists
+    if (!in.atEnd()) {
+        line = in.readLine().trimmed();
+        lineNumber++;
+        // Check if first line is header (contains non-numeric data)
+        QStringList parts = line.split(',');
+        if (parts.size() >= 2) {
+            bool isNumeric1, isNumeric2;
+            parts[0].trimmed().toDouble(&isNumeric1);
+            parts[1].trimmed().toDouble(&isNumeric2);
+
+            // If it looks like data (both are numeric), process it
+            if (isNumeric1 && isNumeric2) {
+                double freq = parts[0].trimmed().toDouble();
+                double s21 = parts[1].trimmed().toDouble();
+                attenuationTable[freq] = s21;
+                validEntries++;
+            }
+        }
+    }
+
+    // Process remaining lines
+    while (!in.atEnd()) {
+        line = in.readLine().trimmed();
+        lineNumber++;
+
+        if (line.isEmpty()) continue;
+
+        QStringList parts = line.split(',');
+        if (parts.size() >= 2) {
+            bool ok1, ok2;
+            double freq = parts[0].trimmed().toDouble(&ok1);
+            double s21 = parts[1].trimmed().toDouble(&ok2);
+
+            if (ok1 && ok2) {
+                attenuationTable[freq] = s21;
+                validEntries++;
+            } else {
+                qDebug() << "Invalid data at line" << lineNumber << ":" << line;
+            }
+        }
+    }
+
+    file.close();
+
+    if (validEntries > 0) {
+        ui->labelCsvStatus->setText(QString("Loaded %1 entries from CSV").arg(validEntries));
+        ui->textBrowserLog->append(QString("Attenuation table loaded: %1 entries").arg(validEntries));
+
+        // Show frequency range
+        if (!attenuationTable.isEmpty()) {
+            double minFreq = attenuationTable.firstKey();
+            double maxFreq = attenuationTable.lastKey();
+            ui->textBrowserLog->append(QString("Frequency range: %1 Hz - %2 Hz")
+                                           .arg(minFreq, 0, 'e', 2).arg(maxFreq, 0, 'e', 2));
+        }
+    } else {
+        QMessageBox::warning(this, "Warning", "No valid data found in CSV file!");
+        ui->labelCsvStatus->setText("No valid data in CSV");
+    }
+}
+
+void MainWindow::on_buttonCalculateAttenuation_clicked() {
+    if (attenuationTable.isEmpty()) {
+        QMessageBox::warning(this, "Warning", "Please load a CSV file first!");
+        return;
+    }
+
+    bool ok1, ok2;
+    double startFreqMHz = ui->lineEditStartFreq->text().toDouble(&ok1);
+    double endFreqMHz = ui->lineEditEndFreq->text().toDouble(&ok2);
+
+    if (!ok1 || !ok2) {
+        QMessageBox::warning(this, "Warning", "Invalid frequency values!");
+        return;
+    }
+
+    if (startFreqMHz >= endFreqMHz) {
+        QMessageBox::warning(this, "Warning", "Start frequency must be less than end frequency!");
+        return;
+    }
+
+    double avgAttenuation = calculateAverageAttenuation(startFreqMHz, endFreqMHz);
+
+    if (avgAttenuation != -999.0) { // -999.0 is our error indicator
+        ui->lineEditAttenuation->setText(QString::number(avgAttenuation, 'f', 3));
+        attenuationDb = avgAttenuation;
+        updatePowerDisplay();
+
+        ui->textBrowserLog->append(QString("Average attenuation calculated: %1 dB (freq range: %2-%3 MHz)")
+                                       .arg(avgAttenuation, 0, 'f', 3).arg(startFreqMHz).arg(endFreqMHz));
+
+        // If device is connected, set frequency to average of the range
+        if (serial->isOpen()) {
+            setFrequencyToAverage(startFreqMHz, endFreqMHz);
+        }
+    } else {
+        QMessageBox::warning(this, "Warning", "No data points found in the specified frequency range!");
+    }
+}
+
+double MainWindow::calculateAverageAttenuation(double startFreqMHz, double endFreqMHz) {
+    // Convert MHz to Hz
+    double startFreqHz = startFreqMHz * 1e6;
+    double endFreqHz = endFreqMHz * 1e6;
+
+    double sum = 0.0;
+    int count = 0;
+
+    // Iterate through the attenuation table
+    for (auto it = attenuationTable.begin(); it != attenuationTable.end(); ++it) {
+        double freq = it.key();
+        double s21 = it.value();
+
+        if (freq >= startFreqHz && freq <= endFreqHz) {
+            sum += s21;
+            count++;
+        }
+    }
+
+    if (count > 0) {
+        double average = sum / count;
+        qDebug() << QString("Found %1 points in range %2-%3 MHz, average S21: %4 dB")
+                        .arg(count).arg(startFreqMHz).arg(endFreqMHz).arg(average);
+        return average;
+    }
+
+    return -999.0; // Error indicator
+}
+
+void MainWindow::on_buttonLoadPresets_clicked() {
+    QString fileName = QFileDialog::getOpenFileName(this,
+                                                    tr("Open Frequency Presets JSON File"), "", tr("JSON Files (*.json)"));
+
+    if (!fileName.isEmpty()) {
+        loadFrequencyPresets(fileName);
+    }
+}
+
+void MainWindow::loadFrequencyPresets(const QString &filePath) {
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, "Error", "Cannot open file: " + file.errorString());
+        return;
+    }
+
+    QByteArray data = file.readAll();
+    file.close();
+
+    QJsonParseError parseError;
+    QJsonDocument doc = QJsonDocument::fromJson(data, &parseError);
+
+    if (parseError.error != QJsonParseError::NoError) {
+        QMessageBox::warning(this, "Error", "JSON parse error: " + parseError.errorString());
+        return;
+    }
+
+    if (!doc.isArray()) {
+        QMessageBox::warning(this, "Error", "JSON file should contain an array of frequency ranges!");
+        return;
+    }
+
+    frequencyPresets.clear();
+    ui->comboPresets->clear();
+    ui->comboPresets->addItem("Select preset or enter manually");
+
+    QJsonArray ranges = doc.array();
+    int validPresets = 0;
+
+    for (const QJsonValue &value : ranges) {
+        if (value.isObject()) {
+            QJsonObject range = value.toObject();
+
+            if (range.contains("name") && range.contains("start") && range.contains("end")) {
+                QString name = range["name"].toString();
+                double start = range["start"].toDouble();
+                double end = range["end"].toDouble();
+
+                if (start < end && start > 0 && end > 0) {
+                    frequencyPresets[name] = QPair<double, double>(start, end);
+                    ui->comboPresets->addItem(name);
+                    validPresets++;
+                }
+            }
+        }
+    }
+
+    if (validPresets > 0) {
+        ui->textBrowserLog->append(QString("Loaded %1 frequency presets").arg(validPresets));
+    } else {
+        QMessageBox::warning(this, "Warning", "No valid presets found in JSON file!");
+    }
+}
+
+void MainWindow::on_comboPresets_currentIndexChanged(int index) {
+    if (index == 0) {
+        // "Select preset or enter manually" is selected, don't change anything
+        return;
+    }
+
+    QString selectedPreset = ui->comboPresets->currentText();
+    if (frequencyPresets.contains(selectedPreset)) {
+        QPair<double, double> range = frequencyPresets[selectedPreset];
+        ui->lineEditStartFreq->setText(QString::number(range.first));
+        ui->lineEditEndFreq->setText(QString::number(range.second));
+
+        ui->textBrowserLog->append(QString("Selected preset: %1 (%2-%3 MHz)")
+                                       .arg(selectedPreset).arg(range.first).arg(range.second));
+    }
+}
+
+void MainWindow::setFrequencyToAverage(double startFreqMHz, double endFreqMHz) {
+    double avgFreqMHz = (startFreqMHz + endFreqMHz) / 2.0;
+
+    // Update the frequency field
+    ui->lineEditFrequency->setText(QString::number(avgFreqMHz, 'f', 1));
+
+    // Stop measurements temporarily
+    measurementTimer->stop();
+    ui->textBrowserLog->append(QString("Setting frequency to average: %1 MHz").arg(avgFreqMHz, 0, 'f', 1));
+
+    // Send frequency command
+    QByteArray cmd = QString("CFFREQ %1\n").arg(avgFreqMHz / 1000.0).toUtf8();
+
+    QTimer::singleShot(1000, this, [this, cmd]() {
+        commandQueue.enqueue(cmd);
+        processCommandQueue();
+    });
 }

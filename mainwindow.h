@@ -8,6 +8,8 @@
 #include <QByteArray>
 #include <QLabel>
 #include <QQueue>
+#include <QMap>
+#include <QComboBox>
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
@@ -31,12 +33,20 @@ private slots:
     void addMeasurementToQueue();
     void addTempToQueue();
     void performZeroCommand();
+    void on_buttonLoadCsv_clicked();
+    void on_buttonCalculateAttenuation_clicked();
+    void on_buttonLoadPresets_clicked();
+    void on_comboPresets_currentIndexChanged(int index);
 
 private:
     void processCommandQueue();
     void updatePowerDisplay();
     void setInterfaceEnabled(bool enabled);
     void resetStatusLabels();
+    void loadAttenuationTable(const QString &filePath);
+    double calculateAverageAttenuation(double startFreqMHz, double endFreqMHz);
+    void loadFrequencyPresets(const QString &filePath);
+    void setFrequencyToAverage(double startFreqMHz, double endFreqMHz);
 
     Ui::MainWindow *ui;
     QSerialPort *serial;
@@ -55,6 +65,12 @@ private:
 
     double attenuationDb = 0.0;
     double lastMeasuredPower = 0.0;
+
+    // Attenuation table: frequency in Hz -> S21 value
+    QMap<double, double> attenuationTable;
+
+    // Frequency presets: name -> QPair(startFreq, endFreq) in MHz
+    QMap<QString, QPair<double, double>> frequencyPresets;
 };
 
 #endif // MAINWINDOW_H

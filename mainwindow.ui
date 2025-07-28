@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>450</width>
-    <height>420</height>
+    <height>550</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -235,6 +235,127 @@
        </item>
       </layout>
      </widget>
+    </widget>
+   </widget>
+   <widget class="QGroupBox" name="groupBoxAttenuation">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>370</y>
+      <width>431</width>
+      <height>151</height>
+     </rect>
+    </property>
+    <property name="title">
+     <string>Attenuation Table</string>
+    </property>
+    <widget class="QPushButton" name="buttonLoadCsv">
+     <property name="geometry">
+      <rect>
+       <x>10</x>
+       <y>20</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Load CSV</string>
+     </property>
+    </widget>
+    <widget class="QPushButton" name="buttonLoadPresets">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>20</y>
+       <width>90</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Load Presets</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="labelCsvStatus">
+     <property name="geometry">
+      <rect>
+       <x>200</x>
+       <y>20</y>
+       <width>221</width>
+       <height>21</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>No CSV file loaded</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="comboPresets">
+     <property name="geometry">
+      <rect>
+       <x>10</x>
+       <y>55</y>
+       <width>180</width>
+       <height>24</height>
+      </rect>
+     </property>
+    </widget>
+    <widget class="QLabel" name="labelStartFreq">
+     <property name="geometry">
+      <rect>
+       <x>10</x>
+       <y>85</y>
+       <width>80</width>
+       <height>21</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Start Freq (MHz)</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="lineEditStartFreq">
+     <property name="geometry">
+      <rect>
+       <x>10</x>
+       <y>110</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+    </widget>
+    <widget class="QLabel" name="labelEndFreq">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>85</y>
+       <width>80</width>
+       <height>21</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>End Freq (MHz)</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="lineEditEndFreq">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>110</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+    </widget>
+    <widget class="QPushButton" name="buttonCalculateAttenuation">
+     <property name="geometry">
+      <rect>
+       <x>190</x>
+       <y>110</y>
+       <width>100</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Calculate Avg</string>
+     </property>
     </widget>
    </widget>
   </widget>
