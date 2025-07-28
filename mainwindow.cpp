@@ -465,7 +465,7 @@ double MainWindow::calculateAverageAttenuation(double startFreqMHz, double endFr
         double average = sum / count;
         qDebug() << QString("Found %1 points in range %2-%3 MHz, average S21: %4 dB")
                         .arg(count).arg(startFreqMHz).arg(endFreqMHz).arg(average);
-        return average;
+        return average * (-1);
     }
 
     return -999.0; // Error indicator
