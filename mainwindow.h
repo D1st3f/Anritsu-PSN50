@@ -7,6 +7,7 @@
 #include <QTimer>
 #include <QByteArray>
 #include <QLabel>
+#include <QQueue>
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
@@ -27,11 +28,12 @@ private slots:
     void on_buttonSetAttenuation_clicked();
     void on_buttonStartStop_clicked();
     void on_zeroButton_clicked();
-    void performMeasurement();
+    void addMeasurementToQueue();
+    void addTempToQueue();
     void performZeroCommand();
-    void requestTemperature();
 
 private:
+    void processCommandQueue();
     void updatePowerDisplay();
     void setInterfaceEnabled(bool enabled);
     void resetStatusLabels();
@@ -43,15 +45,13 @@ private:
     QTimer *tempUpdateTimer;
     QByteArray serialBuffer;
 
+    QQueue<QByteArray> commandQueue;
+    QByteArray currentCommand;
     QLabel *statusIdLabel;
     QLabel *statusTempLabel;
 
+    bool isDeviceBusy = false;
     bool isMeasuring = false;
-    bool isZeroing = false;
-    bool wasMeasuring = false;
-
-    bool awaitingIdnResponse = false;
-    bool awaitingTempResponse = false;
 
     double attenuationDb = 0.0;
     double lastMeasuredPower = 0.0;

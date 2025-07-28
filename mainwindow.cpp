@@ -16,9 +16,9 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(serial, &QSerialPort::readyRead, this, &MainWindow::serialReadyRead);
     connect(serial, &QSerialPort::errorOccurred, this, &MainWindow::serialErrorOccurred);
-    connect(measurementTimer, &QTimer::timeout, this, &MainWindow::performMeasurement);
+    connect(measurementTimer, &QTimer::timeout, this, &MainWindow::addMeasurementToQueue);
+    connect(tempUpdateTimer, &QTimer::timeout, this, &MainWindow::addTempToQueue);
     connect(zeroDelayTimer, &QTimer::timeout, this, &MainWindow::performZeroCommand);
-    connect(tempUpdateTimer, &QTimer::timeout, this, &MainWindow::requestTemperature);
 
     ui->comboPort->addItem("Select Port");
     for (const QSerialPortInfo &info : QSerialPortInfo::availablePorts()) {
@@ -36,53 +36,14 @@ MainWindow::~MainWindow() {
     delete ui;
 }
 
-void MainWindow::resetStatusLabels() {
-    statusIdLabel->setText("ID: -- | FW: --");
-    statusTempLabel->setText("Temp: -- °C");
-}
-
-void MainWindow::setInterfaceEnabled(bool enabled) {
-    ui->comboPort->setEnabled(enabled);
-    ui->connectButton->setEnabled(enabled);
-    ui->zeroButton->setEnabled(enabled && serial->isOpen());
-    ui->lineEditFrequency->setEnabled(enabled);
-    ui->buttonSetFrequency->setEnabled(enabled);
-    ui->lineEditAttenuation->setEnabled(enabled);
-    ui->buttonSetAttenuation->setEnabled(enabled);
-    ui->buttonStartStop->setEnabled(enabled);
-}
-
-void MainWindow::updatePowerDisplay() {
-    if (lastMeasuredPower == 0.0 && !isMeasuring) {
-        ui->labelPowerValue->setText("- dBm");
-        ui->labelWattValue->setText("- W");
+void MainWindow::processCommandQueue() {
+    if (isDeviceBusy || commandQueue.isEmpty()) {
         return;
     }
-
-    double finalPower = lastMeasuredPower + attenuationDb;
-    QString displayTextDbm = QString::number(finalPower, 'f', 4) + " dBm";
-    ui->labelPowerValue->setText(displayTextDbm);
-
-    double powerWatts = pow(10.0, finalPower / 10.0) / 1000.0;
-    QString displayTextWatts;
-    if (powerWatts >= 1000.0) {
-        displayTextWatts = QString::number(powerWatts / 1000.0, 'f', 3) + " kW";
-    } else if (powerWatts >= 1.0) {
-        displayTextWatts = QString::number(powerWatts, 'f', 3) + " W";
-    } else if (powerWatts >= 1e-3) {
-        displayTextWatts = QString::number(powerWatts * 1000.0, 'f', 3) + " mW";
-    } else if (powerWatts >= 1e-6) {
-        displayTextWatts = QString::number(powerWatts * 1e6, 'f', 3) + " µW";
-    } else if (powerWatts >= 1e-9) {
-        displayTextWatts = QString::number(powerWatts * 1e9, 'f', 3) + " nW";
-    } else if (powerWatts >= 1e-12) {
-        displayTextWatts = QString::number(powerWatts * 1e12, 'f', 3) + " pW";
-    } else if (powerWatts >= 1e-15) {
-        displayTextWatts = QString::number(powerWatts * 1e15, 'f', 3) + " fW";
-    } else {
-        displayTextWatts = QString::number(powerWatts, 'e', 3) + " W";
-    }
-    ui->labelWattValue->setText(displayTextWatts);
+    isDeviceBusy = true;
+    currentCommand = commandQueue.dequeue();
+    serial->write(currentCommand);
+    ui->textBrowserLog->append("CMD: " + QString(currentCommand).trimmed());
 }
 
 void MainWindow::serialReadyRead() {
@@ -103,84 +64,74 @@ void MainWindow::serialReadyRead() {
 
         ui->textBrowserLog->append("RSP: " + reply);
 
-        if (awaitingIdnResponse) {
-            if (reply.toUpper() == "NO TERM") {
-                ui->textBrowserLog->append("CMD: Retrying IDN?");
-                serial->write("IDN?\n");
-                continue;
-            }
-            awaitingIdnResponse = false;
-            if (reply.startsWith("ANRITSU")) {
-                QStringList parts = reply.split(',');
-                if (parts.length() >= 5) {
-                    QString deviceId = parts[2];
-                    QString firmwareVersion = parts[4];
-                    statusIdLabel->setText(QString("ID: %1 | FW: %2").arg(deviceId, firmwareVersion));
-                    tempUpdateTimer->start(10000);
-                    requestTemperature();
-                }
-            }
+        if (currentCommand.isEmpty()) {
             continue;
         }
 
-        if (awaitingTempResponse) {
+        if (currentCommand == "IDN?\n") {
             if (reply.toUpper() == "NO TERM") {
-                ui->textBrowserLog->append("CMD: Retrying TEMP?");
-                serial->write("TEMP?\n");
-                continue;
-            }
-            awaitingTempResponse = false;
-            bool ok;
-            double temp = reply.toDouble(&ok);
-            if (ok) {
-                statusTempLabel->setText(QString("Temp: %1 °C").arg(temp, 0, 'f', 1));
+                commandQueue.enqueue(currentCommand);
             } else {
-                statusTempLabel->setText("Temp: Error");
+                if (reply.startsWith("ANRITSU")) {
+                    QStringList parts = reply.split(',');
+                    if (parts.length() >= 5) {
+                        statusIdLabel->setText(QString("ID: %1 | FW: %2").arg(parts[2], parts[4]));
+                        tempUpdateTimer->start(10000);
+                        addTempToQueue();
+                    }
+                }
             }
+        } else if (currentCommand == "TEMP?\n") {
+            if (reply.toUpper() == "NO TERM") {
+                commandQueue.enqueue(currentCommand);
+            } else {
+                bool ok;
+                double temp = reply.toDouble(&ok);
+                statusTempLabel->setText(ok ? QString("Temp: %1 °C").arg(temp, 0, 'f', 1) : "Temp: Error");
+            }
+        } else if (currentCommand == "POW?\n") {
+            QLocale c_locale(QLocale::C);
+            bool ok;
+            double measuredPower = c_locale.toDouble(reply, &ok);
+            if (ok) {
+                lastMeasuredPower = measuredPower;
+                updatePowerDisplay();
+            }
+        } else if (currentCommand.startsWith("CFFREQ")) {
+            if (reply.toUpper() == "OK") {
+                ui->textBrowserLog->append("Frequency set successfully.");
+                if (isMeasuring) {
+                    measurementTimer->start(250);
+                }
+            } else {
+                ui->textBrowserLog->append("Failed to set frequency, retrying...");
+                commandQueue.enqueue(currentCommand);
+            }
+        } else if (currentCommand == "ZERO\n") {
+            if (reply.toUpper() == "OK") {
+                QMessageBox::information(this, "Success", "Zero calibration completed successfully!");
+            }
+            setInterfaceEnabled(true);
             if (isMeasuring) {
                 measurementTimer->start(250);
             }
-            continue;
         }
 
-        if (isZeroing) {
-            if (reply.toUpper() == "OK") {
-                isZeroing = false;
-                setInterfaceEnabled(true);
-                if (wasMeasuring) {
-                    isMeasuring = true;
-                    measurementTimer->start(250);
-                    ui->buttonStartStop->setText("Stop");
-                }
-                QMessageBox::information(this, "Success", "Zero calibration completed successfully!");
-            }
-            continue;
-        }
-
-        QLocale c_locale(QLocale::C);
-        bool ok;
-        double measuredPower = c_locale.toDouble(reply, &ok);
-
-        if (ok) {
-            lastMeasuredPower = measuredPower;
-            updatePowerDisplay();
-        }
+        currentCommand.clear();
+        isDeviceBusy = false;
+        processCommandQueue();
     }
 }
 
 void MainWindow::on_connectButton_clicked() {
     if (serial->isOpen()) {
         measurementTimer->stop();
-        zeroDelayTimer->stop();
         tempUpdateTimer->stop();
+        commandQueue.clear();
+        currentCommand.clear();
+        isDeviceBusy = false;
         serial->close();
         ui->connectButton->setText("Connect");
-        ui->buttonStartStop->setText("Start");
-        isMeasuring = false;
-        isZeroing = false;
-        lastMeasuredPower = 0.0;
-        updatePowerDisplay();
-        serialBuffer.clear();
         setInterfaceEnabled(true);
         resetStatusLabels();
         return;
@@ -201,24 +152,23 @@ void MainWindow::on_connectButton_clicked() {
     if (serial->open(QIODevice::ReadWrite)) {
         ui->connectButton->setText("Disconnect");
         setInterfaceEnabled(true);
-        awaitingIdnResponse = true;
-        serial->write("IDN?\n");
-        ui->textBrowserLog->append("CMD: IDN?");
+        commandQueue.enqueue("IDN?\n");
+        processCommandQueue();
     } else {
         QMessageBox::critical(this, "Error", serial->errorString());
     }
 }
 
-void MainWindow::requestTemperature() {
-    if (!serial->isOpen()) {
-        return;
+void MainWindow::addMeasurementToQueue() {
+    if (commandQueue.size() < 5) {
+        commandQueue.enqueue("POW?\n");
+        processCommandQueue();
     }
-    if (isMeasuring) {
-        measurementTimer->stop();
-    }
-    awaitingTempResponse = true;
-    serial->write("TEMP?\n");
-    ui->textBrowserLog->append("CMD: TEMP?");
+}
+
+void MainWindow::addTempToQueue() {
+    commandQueue.enqueue("TEMP?\n");
+    processCommandQueue();
 }
 
 void MainWindow::on_buttonSetFrequency_clicked() {
@@ -233,10 +183,15 @@ void MainWindow::on_buttonSetFrequency_clicked() {
         return;
     }
 
-    double freqGhz = freqMhz / 1000.0;
-    QString cmd = QString("CFFREQ %1\n").arg(freqGhz);
-    serial->write(cmd.toUtf8());
-    ui->textBrowserLog->append("CMD: " + cmd.trimmed());
+    measurementTimer->stop();
+    ui->textBrowserLog->append("Pausing measurements to set frequency...");
+
+    QByteArray cmd = QString("CFFREQ %1\n").arg(freqMhz / 1000.0).toUtf8();
+
+    QTimer::singleShot(1000, this, [this, cmd]() {
+        commandQueue.enqueue(cmd);
+        processCommandQueue();
+    });
 }
 
 void MainWindow::on_buttonStartStop_clicked() {
@@ -244,7 +199,6 @@ void MainWindow::on_buttonStartStop_clicked() {
         QMessageBox::warning(this, "Warning", "Port not open!");
         return;
     }
-
     isMeasuring = !isMeasuring;
     if (isMeasuring) {
         measurementTimer->start(250);
@@ -252,12 +206,6 @@ void MainWindow::on_buttonStartStop_clicked() {
     } else {
         measurementTimer->stop();
         ui->buttonStartStop->setText("Start");
-    }
-}
-
-void MainWindow::performMeasurement() {
-    if (serial->isOpen()) {
-        serial->write("POW?\n");
     }
 }
 
@@ -279,29 +227,85 @@ void MainWindow::on_zeroButton_clicked() {
         return;
     }
 
-    wasMeasuring = isMeasuring;
+    bool wasMeasuring = isMeasuring;
     if (isMeasuring) {
         measurementTimer->stop();
         isMeasuring = false;
         ui->buttonStartStop->setText("Start");
-        ui->textBrowserLog->append("Measurement stopped for zero calibration");
     }
 
     setInterfaceEnabled(false);
-    ui->textBrowserLog->append("Preparing for zero calibration...");
     serialBuffer.clear();
+    commandQueue.clear();
+
+    zeroDelayTimer->setSingleShot(true);
+    connect(zeroDelayTimer, &QTimer::timeout, this, [this, wasMeasuring]() {
+        isMeasuring = wasMeasuring;
+        performZeroCommand();
+    });
     zeroDelayTimer->start(1000);
 }
 
 void MainWindow::performZeroCommand() {
-    isZeroing = true;
-    serial->write("ZERO\n");
-    ui->textBrowserLog->append("CMD: ZERO");
-    ui->textBrowserLog->append("Waiting for device response...");
+    commandQueue.enqueue("ZERO\n");
+    processCommandQueue();
 }
 
 void MainWindow::serialErrorOccurred(QSerialPort::SerialPortError error) {
     if (error != QSerialPort::NoError) {
         QMessageBox::critical(this, "Serial Error", serial->errorString());
+        currentCommand.clear();
+        isDeviceBusy = false;
+        processCommandQueue();
     }
+}
+
+void MainWindow::resetStatusLabels() {
+    statusIdLabel->setText("ID: -- | FW: --");
+    statusTempLabel->setText("Temp: -- °C");
+    lastMeasuredPower = 0.0;
+    updatePowerDisplay();
+}
+
+void MainWindow::setInterfaceEnabled(bool enabled) {
+    ui->comboPort->setEnabled(enabled);
+    ui->connectButton->setEnabled(enabled);
+    ui->zeroButton->setEnabled(enabled && serial->isOpen());
+    ui->lineEditFrequency->setEnabled(enabled);
+    ui->buttonSetFrequency->setEnabled(enabled);
+    ui->lineEditAttenuation->setEnabled(enabled);
+    ui->buttonSetAttenuation->setEnabled(enabled);
+    ui->buttonStartStop->setEnabled(enabled);
+}
+
+void MainWindow::updatePowerDisplay() {
+    if (lastMeasuredPower == 0.0 && !isMeasuring) {
+        ui->labelPowerValue->setText("- dBm");
+        ui->labelWattValue->setText("- W");
+        return;
+    }
+    double finalPower = lastMeasuredPower + attenuationDb;
+    QString displayTextDbm = QString::number(finalPower, 'f', 2) + " dBm";
+    ui->labelPowerValue->setText(displayTextDbm);
+
+    double powerWatts = pow(10.0, finalPower / 10.0) / 1000.0;
+    QString displayTextWatts;
+    if (powerWatts >= 1000.0) {
+        displayTextWatts = QString::number(powerWatts / 1000.0, 'f', 2) + " kW";
+    } else if (powerWatts >= 1.0) {
+        displayTextWatts = QString::number(powerWatts, 'f', 2) + " W";
+    } else if (powerWatts >= 1e-3) {
+        displayTextWatts = QString::number(powerWatts * 1000.0, 'f', 3) + " mW";
+    } else if (powerWatts >= 1e-6) {
+        displayTextWatts = QString::number(powerWatts * 1e6, 'f', 3) + " µW";
+    } else if (powerWatts >= 1e-9) {
+        displayTextWatts = QString::number(powerWatts * 1e9, 'f', 3) + " nW";
+    } else if (powerWatts >= 1e-12) {
+        displayTextWatts = QString::number(powerWatts * 1e12, 'f', 3) + " pW";
+    } else if (powerWatts >= 1e-15) {
+        displayTextWatts = QString::number(powerWatts * 1e15, 'f', 3) + " fW";
+    } else {
+        displayTextWatts = QString::number(powerWatts, 'e', 3) + " W";
+    }
+    ui->labelWattValue->setText(displayTextWatts);
 }
